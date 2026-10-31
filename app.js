@@ -1,5 +1,5 @@
 import { FilesetResolver, PoseLandmarker } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
-import { EX, joints, measure, interpret, bodyTrend, compare, progress, newBest, missionOf, thisWeekKey } from './analyze.js';
+import { EX, joints, measure, interpret, bodyTrend, compare, progress, newBest, missionOf, thisWeekKey, shotScore } from './analyze.js';
 const $ = i => document.getElementById(i), STEP = 1 / 12, MAX = 60, CY = '#7be6ff', OR = '#ffb03c', BG = 'rgba(10,22,34,.82)';
 const MODEL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task';
 const BONES = [[11, 12], [11, 23], [12, 24], [23, 24], [23, 25], [25, 27], [24, 26], [26, 28], [27, 31], [28, 32], [11, 13], [13, 15], [12, 14], [14, 16]];
@@ -31,7 +31,7 @@ async function run(src) {
       if (k % 6 === 0) { $('pg').value = t / dur * 100; $('st').textContent = `분석 중 ${Math.round(t / dur * 100)}%`; }
     }
     if (frames.length < 10) throw new Error('사람을 찾지 못했습니다. 전신이 나오게 찍어 주세요.');
-    const m = measure(frames, times, key); if (m.kind === 'run') m.tooSmall = m.bodyH < v.videoHeight * .3; const out = interpret(m, key); S = { frames, times, m, out, key };
+    const m = measure(frames, times, key); if (m.kind === 'run') m.tooSmall = m.bodyH < v.videoHeight * .3; const out = interpret(m, key), shot = shotScore(frames, Math.ceil(dur / step), v.videoWidth, v.videoHeight); out.shot = `촬영 점수 ${shot.score}점(${shot.label})`; out.shotTips = shot.tips.join(' '); S = { frames, times, m, out, key };
     if (out.ok) {
       const h = store('hist'), now = Date.now(), done = store('done'), mis = missionOf(now), wk = thisWeekKey(now);
       out.compare = compare(h, key, out); out.best = newBest(h, key, out);
@@ -77,7 +77,7 @@ $('rec').onclick = () => {
 };
 function show(o) {
   $('res').hidden = false; $('headline').textContent = o.headline; $('tip').textContent = o.tip; $('plan').textContent = o.plan || ''; $('type').textContent = o.type || ''; $('why').textContent = o.why || '';
-  const grid = $('stats'), bars = $('bars'), card = $('card'); grid.textContent = ''; bars.textContent = ''; card.hidden = !o.ok; $('barwrap').hidden = !o.ups; $('bobwrap').hidden = !o.bob; $('cmp').textContent = o.compare || ''; $('best').textContent = o.best || ''; $('rank').textContent = o.rank || ''; $('histwrap').hidden = true;
+  const grid = $('stats'), bars = $('bars'), card = $('card'); grid.textContent = ''; bars.textContent = ''; card.hidden = !o.ok; $('barwrap').hidden = !o.ups; $('bobwrap').hidden = !o.bob; $('cmp').textContent = o.compare || ''; $('best').textContent = o.best || ''; $('rank').textContent = [o.rule, o.rank].filter(Boolean).join(' '); $('shot').textContent = [o.shot, o.shotTips].filter(Boolean).join(' · '); $('histwrap').hidden = true;
   if (!o.ok) return;
   o.stats.forEach(([a, b]) => { const d = document.createElement('div'); d.className = 'stat'; const x = document.createElement('b'); x.textContent = a; const y = document.createElement('span'); y.textContent = b; d.append(x, y); grid.append(d); });
   if (o.ups) { const mx = Math.max(...o.ups); o.ups.forEach((u, i) => { const b = document.createElement('i'); b.style.height = u / mx * 100 + '%'; if (i + 1 === o.slowRep) b.className = 'hot'; bars.append(b); }); }

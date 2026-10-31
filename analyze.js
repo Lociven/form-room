@@ -132,7 +132,21 @@ export function interpret(m, key) {
   const k2 = tired ? 'fatigue' : go < .6 ? 'fast' : 'even', k3 = pass < n ? 'range' : tired ? 'endurance' : !steady || go < .6 ? 'control' : 'progress';
   const bat = w => (w.charCodeAt(w.length - 1) - 44032) % 28 > 0, J2 = { '를': ['을', '를'], '가': ['이', '가'], '는': ['은', '는'], '와': ['과', '와'] };
   const g = t => t.replace(/\{g\}([를가는와])?/g, (_, j) => ex.goal + (j ? J2[j][bat(ex.goal) ? 0 : 1] : ''));
-  return { ok: true, name: ex.name, pass, n, score: pass, scoreLabel: `${ex.goal} ${pass}회`, main: pass / n * 100, mainLabel: `${ex.goal} 달성률`, headline: g(pick(STEP1[k1], 1)), why: g(pick(STEP2[k2], 2)) + (tired ? ` 가장 느린 회차는 ${slowRep}회차입니다.` : ''), type: `${ex.name} ${n}회`, tip: g(pick(STEP3[k3], 3)), plan: g(pick(PLAN[k3], 4)), ups, slowRep, big: `${pass}/${n}`, bigLabel: `${ex.goal} 달성`, stats: [[`${n}회`, '반복'], [`${pass}/${n}`, `${ex.goal} 달성`], [`${go.toFixed(2)}초`, '내리는 시간'], [`${up.toFixed(2)}초`, '힘쓰는 시간'], ...Object.entries(s).map(([k, v]) => [`${v.toFixed(0)}°`, k])] };
+  return { ok: true, name: ex.name, pass, n, rule: key === 'squat' ? `IPF 대회 규정의 깊이(고관절 쪽 허벅지 윗면이 무릎 윗면보다 아래)를 영상으로 추정하면 ${pass}/${n}회입니다. 심판 판정은 아닙니다.` : '', score: pass, scoreLabel: `${ex.goal} ${pass}회`, main: pass / n * 100, mainLabel: `${ex.goal} 달성률`, headline: g(pick(STEP1[k1], 1)), why: g(pick(STEP2[k2], 2)) + (tired ? ` 가장 느린 회차는 ${slowRep}회차입니다.` : ''), type: `${ex.name} ${n}회`, tip: g(pick(STEP3[k3], 3)), plan: g(pick(PLAN[k3], 4)), ups, slowRep, big: `${pass}/${n}`, bigLabel: `${ex.goal} 달성`, stats: [[`${n}회`, '반복'], [`${pass}/${n}`, `${ex.goal} 달성`], [`${go.toFixed(2)}초`, '내리는 시간'], [`${up.toFixed(2)}초`, '힘쓰는 시간'], ...Object.entries(s).map(([k, v]) => [`${v.toFixed(0)}°`, k])] };
+}
+// 촬영 상태 점수. 관절 좌표만으로 계산해 어떻게 다시 찍으면 좋은지 알려 준다.
+export function shotScore(frames, sampled, W, H) {
+  const P = frames, med = f => median(P.map(f));
+  const cover = Math.min(1, P.length / Math.max(1, sampled));
+  const conf = mean(P.flatMap(p => [11, 12, 23, 24, 25, 26, 27, 28].map(i => p[i].visibility ?? 1)));
+  const size = med(p => Math.max(p[27].y, p[28].y) - p[0].y) / H;
+  const inside = mean(P.map(p => [27, 28, 11, 12].every(i => p[i].x > 0 && p[i].x < W && p[i].y > 0 && p[i].y < H) ? 1 : 0));
+  const torso = med(p => Math.hypot((p[11].x + p[12].x - p[23].x - p[24].x) / 2, (p[11].y + p[12].y - p[23].y - p[24].y) / 2)) || 1;
+  const frontal = med(p => Math.abs(p[11].x - p[12].x)) / torso;
+  const hip = P.map(p => (p[23].x + p[24].x) / 2), jump = hip.slice(1).filter((x, i) => Math.abs(x - hip[i]) > torso * .5).length / Math.max(1, P.length);
+  const parts = [[cover, 20, '몸을 놓치는 구간이 있습니다. 배경이 단순한 곳에서 찍어 보세요.'], [conf, 25, '관절이 잘 안 보입니다. 밝은 곳에서 몸과 대비되는 옷으로 찍어 보세요.'], [Math.min(1, size / .55), 20, '사람이 작게 찍혔습니다. 화면 높이의 절반 이상이 되게 가까이 찍어 보세요.'], [inside, 15, '몸이 화면 밖으로 나갑니다. 전신이 끝까지 나오게 찍어 보세요.'], [frontal <= .45 ? 1 : Math.max(0, 1 - (frontal - .45) / .6), 15, '정면에 가깝습니다. 옆에서 찍으면 더 정확합니다.'], [jump < .02 ? 1 : 0, 5, '화면이 흔들립니다. 폰을 고정해 찍어 보세요.']];
+  const score = Math.round(parts.reduce((s, [v, w]) => s + v * w, 0)), bad = parts.map(([v, w, t]) => [(1 - v) * w, t]).sort((a, b) => b[0] - a[0]).filter(x => x[0] >= 1.5).slice(0, 2).map(x => x[1]);
+  return { score, tips: bad, label: score >= 85 ? '좋음' : score >= 65 ? '보통' : '다시 찍기 권장' };
 }
 const WK = 7 * 864e5, weekOf = d => Math.floor((d - new Date(d).getTimezoneOffset() * 6e4 + 3 * 864e5) / WK);
 const BOUNCE = [[9.1, 10], [10.8, 25], [12.9, 50], [14.8, 75], [16.5, 85], [16.8, 90]];
