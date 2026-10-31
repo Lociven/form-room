@@ -75,6 +75,8 @@ export function measure(frames, times, key) {
     const last = kept[kept.length - 1];
     if (last && times[p.i] - times[last.i] < .6) { if (p.p > last.p) kept[kept.length - 1] = p; } else kept.push(p);
   }
+  // 내려간 채 영상이 끝나면 올라오는 동작이 없어 회차로 세지 않는다.
+  if (ex.peak === 'low' && kept.length > 1) { const z = kept[kept.length - 1]; if (s[z.i] - Math.min(...s.slice(z.i)) < z.p * .5) kept.pop(); }
   const reps = kept.map(({ i, p }, q) => {
     const stop = s[i] - p * .85, floor = q ? kept[q - 1].i : 0, ceil = q < kept.length - 1 ? kept[q + 1].i : s.length - 1;
     let a = i, b = i;
