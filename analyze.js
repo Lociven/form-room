@@ -32,13 +32,18 @@ export function joints(p) {
 }
 function running(frames, times) {
   const J = frames.map(joints), leg = median(J.map(j => Math.hypot(j.hip.x - j.knee.x, j.hip.y - j.knee.y) + Math.hypot(j.knee.x - j.ankle.x, j.knee.y - j.ankle.y)));
-  const a = smooth(frames.map(p => p[27].x - p[28].x), 1); let cross = 0;
-  for (let i = 1; i < a.length; i++) if (a[i - 1] * a[i] < 0 && Math.abs(a[i] - a[i - 1]) > leg * .01) cross++;
-  const secs = times[times.length - 1] - times[0], cadence = cross / secs * 60;
+  const a = smooth(frames.map(p => p[27].x - p[28].x), 1), steps = [];
+  for (let i = 1; i < a.length; i++) if (a[i - 1] * a[i] < 0 && Math.abs(a[i] - a[i - 1]) > leg * .01 && (!steps.length || times[i] - steps[steps.length - 1] > .18)) steps.push(times[i]);
+  const secs = times[times.length - 1] - times[0], cadence = steps.length > 1 ? (steps.length - 1) / (steps[steps.length - 1] - steps[0]) * 60 : 0;
+  const gaps = steps.slice(1).map((t, i) => t - steps[i]), odd = gaps.filter((_, i) => i % 2), even = gaps.filter((_, i) => !(i % 2));
+  const balance = odd.length && even.length ? Math.abs(mean(odd) - mean(even)) / mean(gaps) * 100 : 0;
+  const hipMid = frames.map(p => (p[23].y + p[24].y) / 2), base = smooth(hipMid, 8), bob = smooth(hipMid.map((y, i) => y - base[i]), 1);
+  const sorted = [...bob].sort((x, y) => x - y), bounce = (sorted[Math.floor(bob.length * .95)] - sorted[Math.floor(bob.length * .05)]) / leg * 100;
   const torso = median(J.map(j => lean(j.sh, j.hip)));
-  const ahead = frames.map(p => Math.max(Math.abs(p[27].x - p[23].x), Math.abs(p[28].x - p[24].x)) / leg);
-  const reach = ahead.sort((x, y) => x - y)[Math.floor(ahead.length * .9)];
-  return { kind: 'run', cadence, torso, reach, secs, visibility: vis(frames, [11, 23, 25, 27]) };
+  const ahead = frames.map(p => Math.max(Math.abs(p[27].x - p[23].x), Math.abs(p[28].x - p[24].x)) / leg).sort((x, y) => x - y), reach = ahead[Math.floor(ahead.length * .9)];
+  const lift = frames.map(p => Math.max(lean(p[23], p[25]), lean(p[24], p[26]))).sort((x, y) => x - y), knee = lift[Math.floor(lift.length * .9)];
+  const elbow = median(J.map(j => angle(j.sh, j.elbow, j.wrist)));
+  return { kind: 'run', cadence, torso, reach, secs, balance, bounce, knee, elbow, steps, gaps, bob: bob.map(v => v / leg * 100), visibility: vis(frames, [11, 23, 25, 27]) };
 }
 export function measure(frames, times, key) {
   const ex = EX[key];
@@ -70,8 +75,10 @@ export function interpret(m, key) {
   if (m.kind === 'run') {
     if (m.visibility < .6 || m.secs < 3 || m.cadence < 90) return fail;
     const seed = Math.round(m.cadence * 3 + m.torso * 7 + m.reach * 100), pick = (a, n) => a[(seed * 31 + n * 17) % a.length];
-    const k = m.cadence < 165 ? 'slow' : m.cadence > 190 ? 'quick' : 'good', k2 = m.reach > .55 ? 'reach' : m.torso > 15 ? 'lean' : 'ok';
-    return { ok: true, name: ex.name, headline: pick(RUN.head[k], 1), why: pick(RUN.why[k2], 2), type: `케이던스 ${m.cadence.toFixed(0)}보/분`, tip: pick(RUN.tip[k2 === 'ok' ? k : k2], 3), plan: pick(RUN.plan, 4), big: `${m.cadence.toFixed(0)}`, bigLabel: '걸음/분', stats: [[`${m.cadence.toFixed(0)}`, '케이던스'], [`${m.torso.toFixed(0)}°`, '상체 기울기'], [`${(m.reach * 100).toFixed(0)}%`, '다리 벌림 폭(다리 길이 대비)'], [`${m.secs.toFixed(0)}초`, '분석 구간']] };
+    const k = m.cadence < 165 ? 'slow' : m.cadence > 190 ? 'quick' : 'good', k2 = m.reach > .55 ? 'reach' : m.torso > 15 ? 'lean' : m.bounce > 9 ? 'bounce' : 'ok';
+    const kind = m.bounce > 9 ? '통통 튀는 러너' : m.reach > .55 ? '보폭형 러너' : m.cadence >= 175 ? '잰걸음 러너' : '안정형 러너';
+    const goal = m.cadence < 175 ? `다음 목표: 같은 페이스로 케이던스 ${Math.round(m.cadence * 1.05)}` : k2 === 'bounce' ? `다음 목표: 위아래 움직임 ${(m.bounce - 1).toFixed(1)}% 이하` : `다음 목표: 지금 수치를 유지하며 거리 늘리기`;
+    return { ok: true, run: true, name: ex.name, main: m.cadence, mainLabel: '케이던스', headline: pick(RUN.head[k], 1), why: pick(RUN.why[k2], 2), type: `러너 유형 후보: ${kind}`, tip: pick(RUN.tip[k2 === 'ok' ? k : k2], 3), plan: `${goal}. ${pick(RUN.plan, 4)}`, big: `${m.cadence.toFixed(0)}`, bigLabel: '걸음/분', kind, bob: m.bob, stats: [[`${m.cadence.toFixed(0)}`, '케이던스(걸음/분)'], [`${m.bounce.toFixed(1)}%`, '위아래 움직임(다리 길이 대비)'], [`${m.balance.toFixed(1)}%`, '좌우 리듬 차이'], [`${m.torso.toFixed(0)}°`, '상체 기울기'], [`${(m.reach * 100).toFixed(0)}%`, '앞다리 뻗음'], [`${m.knee.toFixed(0)}°`, '무릎 들림'], [`${m.elbow.toFixed(0)}°`, '팔꿈치 각도'], [`${m.steps.length}걸음`, '분석 걸음 수']] };
   }
   const r = m.reps; if (m.visibility < .6 || m.range < .15 || r.length < 2) return fail;
   const n = r.length, pass = r.filter(x => x.pass).length, ups = r.map(x => ex.peak === 'low' ? x.back : x.go), go = mean(r.map(x => ex.peak === 'low' ? x.go : x.back)), up = mean(ups);
@@ -82,11 +89,16 @@ export function interpret(m, key) {
   const k2 = tired ? 'fatigue' : go < .6 ? 'fast' : 'even', k3 = pass < n ? 'range' : tired ? 'endurance' : !steady || go < .6 ? 'control' : 'progress';
   const bat = w => (w.charCodeAt(w.length - 1) - 44032) % 28 > 0, J2 = { '를': ['을', '를'], '가': ['이', '가'], '는': ['은', '는'], '와': ['과', '와'] };
   const g = t => t.replace(/\{g\}([를가는와])?/g, (_, j) => ex.goal + (j ? J2[j][bat(ex.goal) ? 0 : 1] : ''));
-  return { ok: true, name: ex.name, headline: g(pick(STEP1[k1], 1)), why: g(pick(STEP2[k2], 2)) + (tired ? ` 가장 느린 회차는 ${slowRep}회차입니다.` : ''), type: `${ex.name} ${n}회`, tip: g(pick(STEP3[k3], 3)), plan: g(pick(PLAN[k3], 4)), ups, slowRep, big: `${pass}/${n}`, bigLabel: `${ex.goal} 달성`, stats: [[`${n}회`, '반복'], [`${pass}/${n}`, `${ex.goal} 달성`], [`${go.toFixed(2)}초`, '내리는 시간'], [`${up.toFixed(2)}초`, '힘쓰는 시간'], ...Object.entries(s).map(([k, v]) => [`${v.toFixed(0)}°`, k])] };
+  return { ok: true, name: ex.name, main: pass / n * 100, mainLabel: `${ex.goal} 달성률`, headline: g(pick(STEP1[k1], 1)), why: g(pick(STEP2[k2], 2)) + (tired ? ` 가장 느린 회차는 ${slowRep}회차입니다.` : ''), type: `${ex.name} ${n}회`, tip: g(pick(STEP3[k3], 3)), plan: g(pick(PLAN[k3], 4)), ups, slowRep, big: `${pass}/${n}`, bigLabel: `${ex.goal} 달성`, stats: [[`${n}회`, '반복'], [`${pass}/${n}`, `${ex.goal} 달성`], [`${go.toFixed(2)}초`, '내리는 시간'], [`${up.toFixed(2)}초`, '힘쓰는 시간'], ...Object.entries(s).map(([k, v]) => [`${v.toFixed(0)}°`, k])] };
+}
+export function compare(hist, ex, out) {
+  const prev = [...hist].reverse().find(h => h.ex === ex); if (!prev) return '첫 기록입니다. 같은 조건으로 다시 찍으면 변화를 보여 줍니다.';
+  const d = out.main - prev.v, days = Math.max(1, Math.round((Date.now() - prev.d) / 864e5));
+  return `${days}일 전보다 ${out.mainLabel} ${d >= 0 ? '+' : ''}${d.toFixed(1)}`;
 }
 export function bodyTrend(log) {
-  if (log.length < 2) return '기록이 쌓이면 변화를 보여 줍니다.';
-  const a = log[0], b = log[log.length - 1], dw = b.w - a.w, dm = b.m && a.m ? b.m - a.m : null;
-  const t = `${log.length}회 기록, 몸무게 ${dw >= 0 ? '+' : ''}${dw.toFixed(1)}kg`;
-  return dm === null ? t : `${t}, 골격근량 ${dm >= 0 ? '+' : ''}${dm.toFixed(1)}kg`;
+  if (log.length < 2) return log.length ? '첫 기록을 저장했습니다.' : '입력은 선택입니다. 저장하면 날짜별로 쌓입니다.';
+  const a = log[0], b = log[log.length - 1], parts = [`${log.length}회 기록`];
+  [['w', '몸무게', 'kg'], ['m', '골격근량', 'kg'], ['f', '체지방률', '%']].forEach(([k, n, u]) => { if (a[k] && b[k]) { const d = b[k] - a[k]; parts.push(`${n} ${d >= 0 ? '+' : ''}${d.toFixed(1)}${u}`); } });
+  return parts.join(', ');
 }
