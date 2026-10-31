@@ -1,5 +1,5 @@
 import { FilesetResolver, PoseLandmarker } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
-import { EX, joints, measure, interpret, bodyTrend, compare } from './analyze.js';
+import { EX, joints, measure, interpret, bodyTrend, compare, progress, newBest, missionOf, thisWeekKey } from './analyze.js';
 const $ = i => document.getElementById(i), STEP = 1 / 12, MAX = 60, CY = '#7be6ff', OR = '#ffb03c', BG = 'rgba(10,22,34,.82)';
 const MODEL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task';
 const BONES = [[11, 12], [11, 23], [12, 24], [23, 24], [23, 25], [25, 27], [24, 26], [26, 28], [27, 31], [28, 32], [11, 13], [13, 15], [12, 14], [14, 16]];
@@ -32,7 +32,12 @@ async function run(src) {
     }
     if (frames.length < 10) throw new Error('사람을 찾지 못했습니다. 전신이 나오게 찍어 주세요.');
     const m = measure(frames, times, key); if (m.kind === 'run') m.tooSmall = m.bodyH < v.videoHeight * .3; const out = interpret(m, key); S = { frames, times, m, out, key };
-    if (out.ok) { const h = store('hist'); out.compare = compare(h, key, out); h.push({ d: Date.now(), ex: key, v: out.main }); save('hist', h); }
+    if (out.ok) {
+      const h = store('hist'), now = Date.now(), done = store('done'), mis = missionOf(now), wk = thisWeekKey(now);
+      out.compare = compare(h, key, out); out.best = newBest(h, key, out);
+      if (!done.includes(wk) && mis.ok(out, key, h)) { done.push(wk); save('done', done); out.best = [out.best, `이번 주 미션 완료: ${mis.t}`].filter(Boolean).join(' · '); }
+      h.push({ d: now, ex: key, v: out.main, s: out.score }); save('hist', h); board();
+    }
     window.__result = { ...out, sec: (performance.now() - t0) / 1000, frames: frames.length, reps: m.reps?.length, vis: m.visibility, range: m.range };
     show(out); if (out.ok) { $('replay').hidden = false; await seek(v, 0); paint(0); }
     $('st').textContent = v.duration > MAX ? '앞의 60초만 분석했습니다.' : '분석을 마쳤습니다.';
@@ -72,7 +77,7 @@ $('rec').onclick = () => {
 };
 function show(o) {
   $('res').hidden = false; $('headline').textContent = o.headline; $('tip').textContent = o.tip; $('plan').textContent = o.plan || ''; $('type').textContent = o.type || ''; $('why').textContent = o.why || '';
-  const grid = $('stats'), bars = $('bars'), card = $('card'); grid.textContent = ''; bars.textContent = ''; card.hidden = !o.ok; $('barwrap').hidden = !o.ups; $('bobwrap').hidden = !o.bob; $('cmp').textContent = o.compare || ''; $('histwrap').hidden = true;
+  const grid = $('stats'), bars = $('bars'), card = $('card'); grid.textContent = ''; bars.textContent = ''; card.hidden = !o.ok; $('barwrap').hidden = !o.ups; $('bobwrap').hidden = !o.bob; $('cmp').textContent = o.compare || ''; $('best').textContent = o.best || ''; $('rank').textContent = o.rank || ''; $('histwrap').hidden = true;
   if (!o.ok) return;
   o.stats.forEach(([a, b]) => { const d = document.createElement('div'); d.className = 'stat'; const x = document.createElement('b'); x.textContent = a; const y = document.createElement('span'); y.textContent = b; d.append(x, y); grid.append(d); });
   if (o.ups) { const mx = Math.max(...o.ups); o.ups.forEach((u, i) => { const b = document.createElement('i'); b.style.height = u / mx * 100 + '%'; if (i + 1 === o.slowRep) b.className = 'hot'; bars.append(b); }); }
@@ -82,7 +87,26 @@ function show(o) {
   c.fillStyle = OR; c.font = 'bold 150px Malgun Gothic,sans-serif'; c.fillText(o.big, 540, 330);
   c.fillStyle = '#eef3f4'; c.font = 'bold 60px Malgun Gothic,sans-serif'; c.fillText(`${o.name} ${o.bigLabel}`, 540, 430);
   c.font = '44px Malgun Gothic,sans-serif'; c.fillStyle = CY; c.fillText(o.headline, 540, 560); c.fillStyle = '#a8bac2'; c.fillText('폼 기록실', 540, 960);
+  const p = progress(store('hist'), store('done')); c.font = 'bold 40px Malgun Gothic,sans-serif'; c.fillStyle = OR; c.fillText(`${p.streak}주 연속 · ${p.n}회 기록`, 540, 700);
+  if (o.best) { c.font = '36px Malgun Gothic,sans-serif'; c.fillStyle = CY; c.fillText(o.best.split(' · ')[0], 540, 770); }
 }
+function board() {
+  const p = progress(store('hist'), store('done')); $('board').hidden = !p.n; $('mission').textContent = `${p.missionDone ? '완료: ' : ''}${p.mission}`; if (!p.n) return;
+  $('bstreak').textContent = `${p.streak}주`; $('bweek').textContent = `${Math.min(p.thisWeek, 2)}/2`; $('blevel').textContent = p.level; $('bnext').textContent = p.next;
+  $('btolevel').textContent = p.toNext ? `${p.nextLevel}까지 ${p.toNext}회` : '최고 등급입니다';
+  const b = $('badges'); b.textContent = ''; p.badges.forEach(t => { const s = document.createElement('span'); s.textContent = t; b.append(s); });
+}
+function saveFile(name, text, type) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; a.click(); }
+$('remind').addEventListener('click', () => {
+  // 서버 없이 알림을 주려고 매주 반복되는 캘린더 일정을 내려받는다.
+  const d = new Date(); d.setDate(d.getDate() + 7); const f = n => String(n).padStart(2, '0'), day = `${d.getFullYear()}${f(d.getMonth() + 1)}${f(d.getDate())}`, url = location.href.split('?')[0];
+  saveFile('폼기록실_매주알림.ics', ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//form-room//KO', 'BEGIN:VEVENT', `UID:form-room-${day}@lociven.github.io`, `DTSTAMP:${day}T000000Z`, `DTSTART:${day}T100000Z`, 'DURATION:PT10M', 'RRULE:FREQ=WEEKLY', 'SUMMARY:폼 기록실: 이번 주 한 세트 찍기', `URL:${url}`, 'END:VEVENT', 'END:VCALENDAR'].join('\r\n'), 'text/calendar');
+});
+$('backup').addEventListener('click', () => saveFile('폼기록실_백업.json', JSON.stringify({ hist: store('hist'), done: store('done'), body: store('body') }), 'application/json'));
+$('restore').addEventListener('change', async e => {
+  const f = e.target.files[0]; if (!f) return;
+  try { const j = JSON.parse(await f.text()); ['hist', 'done', 'body'].forEach(k => { if (Array.isArray(j[k])) save(k, j[k]); }); board(); trend(); $('bnext').textContent = '기록을 불러왔습니다.'; } catch { $('bnext').textContent = '백업 파일을 읽지 못했습니다.'; }
+});
 $('file').addEventListener('change', e => { const f = e.target.files[0]; if (f) run(URL.createObjectURL(f)); });
 function line(c, v, col, dots) {
   const x = c.getContext('2d'), W = c.width, H = c.height, lo = Math.min(...v), hi = Math.max(...v), r = hi - lo || 1, px = i => 10 + i / Math.max(1, v.length - 1) * (W - 20), py = y => H - 12 - (y - lo) / r * (H - 24);
@@ -93,5 +117,5 @@ function store(k) { try { return JSON.parse(localStorage.getItem(k) || '[]'); } 
 function save(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
 const trend = () => { $('body').textContent = bodyTrend(store('body')); };
 $('save').addEventListener('click', () => { const r = { d: Date.now(), h: +$('h').value || null, w: +$('w').value || null, m: +$('m').value || null, f: +$('f').value || null }; if (!r.h && !r.w && !r.m && !r.f) return; const l = store('body'); l.push(r); save('body', l); trend(); });
-trend();
+trend(); board(); navigator.storage?.persist?.();
 if (location.hostname === 'localhost') { const u = new URLSearchParams(location.search); if (u.get('ex')) pickEx(u.get('ex')); if (u.get('test')) fetch(u.get('test')).then(r => r.blob()).then(b => run(URL.createObjectURL(b))); }

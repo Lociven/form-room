@@ -33,21 +33,37 @@ export function joints(p) {
 function running(frames, times) {
   const J = frames.map(joints), legs = J.map(j => Math.hypot(j.hip.x - j.knee.x, j.hip.y - j.knee.y) + Math.hypot(j.knee.x - j.ankle.x, j.knee.y - j.ankle.y)), leg = median(legs);
   const fps = (times.length - 1) / (times[times.length - 1] - times[0]), secs = times[times.length - 1] - times[0];
-  // 다리 길이로 나눠서 사람이 멀어지거나 카메라가 움직여도 값이 흔들리지 않게 한다.
-  const sw = smooth(frames.map((p, i) => (p[27].x - p[28].x) / legs[i]), 1), mid = mean(sw), z = sw.map(v => v - mid);
+  // 프레임별 다리 길이는 무릎이 굽을 때 줄어든다. 한 주기보다 길게 평균 낸 길이로 나눠야 몸 높이가 왜곡되지 않는다.
+  const scale = smooth(legs, Math.max(3, Math.round(.5 * fps)));
+  const sw = smooth(frames.map((p, i) => (p[27].x - p[28].x) / scale[i]), 1), mid = mean(sw), z = sw.map(v => v - mid);
   const corr = lag => { let n = 0, d = 0; for (let i = 0; i + lag < z.length; i++) { n += z[i] * z[i + lag]; d += z[i] * z[i]; } return d ? n / d : 0; };
   let best = 0, score = -1;
   // 한 걸음 주기는 0.25~0.45초. 좌우 교대라 왼발 기준 한 주기는 그 두 배다.
   for (let lag = Math.round(.5 * fps); lag <= Math.round(.9 * fps); lag++) { const c = corr(lag); if (c > score) { score = c; best = lag; } }
-  const stride = best / fps, cadence = best ? 120 / stride : 0;
-  const hips = frames.map((p, i) => (p[23].y + p[24].y) / 2 / legs[i]), w = Math.max(2, Math.round(stride * fps / 4)), base = smooth(hips, w * 2), bob = hips.map((y, i) => y - base[i]);
+  // 프레임 간격 때문에 생기는 오차를 줄인다: 뒤쪽 주기의 봉우리를 찾아 평균 주기를 구한다.
+  let period = best;
+  for (const k of [2, 3, 4]) {
+    const c = Math.round(period * k); let top = -2, at = c;
+    if (c + 2 >= z.length * .7) break;
+    for (let lag = c - 2; lag <= c + 2; lag++) { const v = corr(lag); if (v > top) { top = v; at = lag; } }
+    const l = corr(at - 1), r = corr(at + 1), bend = l - 2 * top + r;
+    period = (at + (bend < 0 ? (l - r) / (2 * bend) : 0)) / k;
+  }
+  const stride = period / fps, cadence = best ? 120 / stride : 0;
+  const hips = frames.map((p, i) => (p[23].y + p[24].y) / 2 / scale[i]), w = Math.max(2, Math.round(stride * fps / 4)), base = smooth(hips, w * 2), bob = hips.map((y, i) => y - base[i]);
   const cycles = []; for (let i = 0; i + best / 2 < bob.length; i += Math.max(1, Math.round(best / 2))) { const seg = bob.slice(i, i + Math.round(best / 2) + 1); cycles.push(Math.max(...seg) - Math.min(...seg)); }
   const bounce = (cycles.length ? median(cycles) : 0) * 100;
   const half = Math.max(1, Math.round(best / 2)), gaps = []; for (let i = 0; i + half < z.length; i++) if (z[i] * z[i + 1] < 0) gaps.push(i);
   const step = gaps.slice(1).map((v, i) => (v - gaps[i]) / fps).filter(g => g > .15 && g < .7), odd = step.filter((_, i) => i % 2), even = step.filter((_, i) => !(i % 2));
   const balance = odd.length && even.length ? Math.abs(mean(odd) - mean(even)) / mean(step) * 100 : 0;
   const torso = median(J.map(j => lean(j.sh, j.hip)));
-  const ahead = frames.map((p, i) => Math.max(Math.abs(p[27].x - p[23].x), Math.abs(p[28].x - p[24].x)) / legs[i]).sort((x, y) => x - y), reach = ahead[Math.floor(ahead.length * .9)];
+  // 착지 순간 발이 몸보다 얼마나 앞에 놓이나. 뒷발까지 세면 값이 부풀어 착지 순간만 본다.
+  const fw = median(frames.map(p => (p[31].x + p[32].x) - (p[29].x + p[30].x))) >= 0 ? 1 : -1, land = [];
+  for (const [an, he, to] of [[27, 29, 31], [28, 30, 32]]) {
+    const foot = frames.map((p, i) => Math.max(p[he].y, p[to].y) / scale[i]), low = [...foot].sort((a, b) => a - b)[Math.floor(foot.length * .95)];
+    for (let i = 1; i < foot.length; i++) if (foot[i] >= low - .06 && foot[i - 1] < low - .06) land.push(fw * (frames[i][an].x - (frames[i][23].x + frames[i][24].x) / 2) / scale[i]);
+  }
+  const reach = land.length >= 2 ? median(land) : 0;
   const lift = frames.map(p => Math.max(lean(p[23], p[25]), lean(p[24], p[26]))).sort((x, y) => x - y), knee = lift[Math.floor(lift.length * .9)];
   const elbow = median(J.map(j => angle(j.sh, j.elbow, j.wrist)));
   const hTop = frames.map(p => Math.max(p[27].y, p[28].y) - p[0].y), bodyH = median(hTop), spread = Math.sqrt(mean(legs.map(l => (l - leg) ** 2))) / leg;
@@ -100,10 +116,11 @@ export function interpret(m, key) {
     if (m.tooSmall) return { ok: false, headline: '사람이 너무 작게 찍혔습니다', tip: '화면 높이의 절반 이상이 되도록 가까이서 찍어 주세요.' };
     if (m.visibility < .6 || m.secs < 3 || m.rhythm < .35 || m.spread > .25) return { ok: false, headline: '달리는 리듬을 읽지 못했습니다', tip: `${ex.guide}, 일정한 속도로 달리는 장면을 찍어 주세요.` };
     const seed = Math.round(m.cadence * 3 + m.torso * 7 + m.reach * 100), pick = (a, n) => a[(seed * 31 + n * 17) % a.length];
-    const k = m.cadence < 165 ? 'slow' : m.cadence > 190 ? 'quick' : 'good', k2 = m.reach > .55 ? 'reach' : m.torso > 15 ? 'lean' : m.bounce > 12 ? 'bounce' : 'ok';
-    const kind = m.bounce > 12 ? '통통 튀는 러너' : m.reach > .55 ? '보폭형 러너' : m.cadence >= 175 ? '잰걸음 러너' : '안정형 러너';
-    const goal = m.cadence < 175 ? `다음 목표: 같은 페이스로 케이던스 ${Math.round(m.cadence * 1.05)}` : k2 === 'bounce' ? `다음 목표: 위아래 움직임 ${(m.bounce - 1).toFixed(1)}% 이하` : `다음 목표: 지금 수치를 유지하며 거리 늘리기`;
-    return { ok: true, run: true, name: ex.name, main: m.cadence, mainLabel: '케이던스', headline: pick(RUN.head[k], 1), why: pick(RUN.why[k2], 2), type: `러너 유형 후보: ${kind}`, tip: pick(RUN.tip[k2 === 'ok' ? k : k2], 3), plan: `${goal}. ${pick(RUN.plan, 4)}`, big: `${m.cadence.toFixed(0)}`, bigLabel: '걸음/분', kind, bob: m.bob, stats: [[`${m.cadence.toFixed(0)}`, '케이던스(걸음/분)'], [`${m.bounce.toFixed(1)}%`, '위아래 움직임(다리 길이 대비)'], [`${m.balance.toFixed(1)}%`, '좌우 리듬 차이'], [`${m.torso.toFixed(0)}°`, '상체 기울기'], [`${(m.reach * 100).toFixed(0)}%`, '앞다리 뻗음'], [`${m.knee.toFixed(0)}°`, '무릎 들림'], [`${m.elbow.toFixed(0)}°`, '팔꿈치 각도'], [`약 ${m.steps}걸음`, '분석 걸음 수']] };
+    // 기준값은 공개 러너 측정(39명, 80회)의 측정값 분포 85% 지점이다. 케이던스는 속도에 따라 달라 양 끝만 본다.
+    const k = m.cadence < 155 ? 'slow' : m.cadence > 195 ? 'quick' : 'good', k2 = m.reach > .31 ? 'reach' : m.torso > 15 ? 'lean' : m.bounce > 16.5 ? 'bounce' : 'ok';
+    const kind = m.bounce > 16.5 ? '통통 튀는 러너' : m.reach > .31 ? '보폭형 러너' : m.cadence >= 180 ? '잰걸음 러너' : '안정형 러너';
+    const goal = m.cadence < 160 ? `다음 목표: 같은 페이스로 케이던스 ${Math.round(m.cadence * 1.05)}` : k2 === 'bounce' ? `다음 목표: 위아래 움직임 ${(m.bounce - 1).toFixed(1)}% 이하` : `다음 목표: 지금 수치를 유지하며 거리 늘리기`;
+    return { ok: true, run: true, name: ex.name, main: m.cadence, mainLabel: '케이던스', headline: pick(RUN.head[k], 1), why: pick(RUN.why[k2], 2), type: `러너 유형 후보: ${kind}`, rank: `공개 러너 측정 100회로 줄 세우면 위아래 움직임이 적은 쪽에서 약 ${bounceRank(m.bounce)}번째입니다`, score: -m.bounce, scoreLabel: `위아래 움직임 ${m.bounce.toFixed(1)}%`, tip: pick(RUN.tip[k2 === 'ok' ? k : k2], 3), plan: `${goal}. ${pick(RUN.plan, 4)}`, big: `${m.cadence.toFixed(0)}`, bigLabel: '걸음/분', kind, bob: m.bob, stats: [[`${m.cadence.toFixed(0)}`, '케이던스(걸음/분)'], [`${m.bounce.toFixed(1)}%`, '위아래 움직임(다리 길이 대비)'], [`${m.balance.toFixed(1)}%`, '좌우 리듬 차이'], [`${m.torso.toFixed(0)}°`, '상체 기울기'], [`${(m.reach * 100).toFixed(0)}%`, '착지 때 발이 앞선 거리'], [`${m.knee.toFixed(0)}°`, '무릎 들림'], [`${m.elbow.toFixed(0)}°`, '팔꿈치 각도'], [`약 ${m.steps}걸음`, '분석 걸음 수']] };
   }
   const r = m.reps; if (m.cuts >= 2) return { ok: false, headline: '여러 장면이 이어진 영상입니다', tip: `편집 없이 한 번에 찍은 영상을 올려 주세요. ${ex.guide}.` };
   if (m.visibility < .6 || r.length < 1) return fail;
@@ -115,7 +132,38 @@ export function interpret(m, key) {
   const k2 = tired ? 'fatigue' : go < .6 ? 'fast' : 'even', k3 = pass < n ? 'range' : tired ? 'endurance' : !steady || go < .6 ? 'control' : 'progress';
   const bat = w => (w.charCodeAt(w.length - 1) - 44032) % 28 > 0, J2 = { '를': ['을', '를'], '가': ['이', '가'], '는': ['은', '는'], '와': ['과', '와'] };
   const g = t => t.replace(/\{g\}([를가는와])?/g, (_, j) => ex.goal + (j ? J2[j][bat(ex.goal) ? 0 : 1] : ''));
-  return { ok: true, name: ex.name, main: pass / n * 100, mainLabel: `${ex.goal} 달성률`, headline: g(pick(STEP1[k1], 1)), why: g(pick(STEP2[k2], 2)) + (tired ? ` 가장 느린 회차는 ${slowRep}회차입니다.` : ''), type: `${ex.name} ${n}회`, tip: g(pick(STEP3[k3], 3)), plan: g(pick(PLAN[k3], 4)), ups, slowRep, big: `${pass}/${n}`, bigLabel: `${ex.goal} 달성`, stats: [[`${n}회`, '반복'], [`${pass}/${n}`, `${ex.goal} 달성`], [`${go.toFixed(2)}초`, '내리는 시간'], [`${up.toFixed(2)}초`, '힘쓰는 시간'], ...Object.entries(s).map(([k, v]) => [`${v.toFixed(0)}°`, k])] };
+  return { ok: true, name: ex.name, pass, n, score: pass, scoreLabel: `${ex.goal} ${pass}회`, main: pass / n * 100, mainLabel: `${ex.goal} 달성률`, headline: g(pick(STEP1[k1], 1)), why: g(pick(STEP2[k2], 2)) + (tired ? ` 가장 느린 회차는 ${slowRep}회차입니다.` : ''), type: `${ex.name} ${n}회`, tip: g(pick(STEP3[k3], 3)), plan: g(pick(PLAN[k3], 4)), ups, slowRep, big: `${pass}/${n}`, bigLabel: `${ex.goal} 달성`, stats: [[`${n}회`, '반복'], [`${pass}/${n}`, `${ex.goal} 달성`], [`${go.toFixed(2)}초`, '내리는 시간'], [`${up.toFixed(2)}초`, '힘쓰는 시간'], ...Object.entries(s).map(([k, v]) => [`${v.toFixed(0)}°`, k])] };
+}
+const WK = 7 * 864e5, weekOf = d => Math.floor((d - new Date(d).getTimezoneOffset() * 6e4 + 3 * 864e5) / WK);
+const BOUNCE = [[9.1, 10], [10.8, 25], [12.9, 50], [14.8, 75], [16.5, 85], [16.8, 90]];
+function bounceRank(b) {
+  if (b <= BOUNCE[0][0]) return 5; if (b >= BOUNCE[5][0]) return 95;
+  for (let i = 1; i < BOUNCE.length; i++) if (b <= BOUNCE[i][0]) { const [x0, y0] = BOUNCE[i - 1], [x1, y1] = BOUNCE[i]; return Math.round(y0 + (b - x0) / (x1 - x0) * (y1 - y0)); }
+}
+export const MISSIONS = [
+  { t: '스쿼트 전 회차 깊이 달성', ok: (o, k) => k === 'squat' && o.n >= 3 && o.pass === o.n },
+  { t: '러닝 영상 기록 남기기', ok: (o, k) => k === 'run' },
+  { t: '푸시업 5회 이상 깊이 달성', ok: (o, k) => k === 'pushup' && o.pass >= 5 },
+  { t: '데드리프트 전 회차 잠금', ok: (o, k) => k === 'deadlift' && o.n >= 2 && o.pass === o.n },
+  { t: '평소 안 찍던 종목 한 번 기록', ok: (o, k, h) => !h.some(x => x.ex === k) },
+  { t: '지난번보다 나은 기록 만들기', ok: (o, k, h) => { const s = h.filter(x => x.ex === k && x.s !== undefined).map(x => x.s); return s.length > 0 && o.score > Math.max(...s); } }
+];
+export const thisWeekKey = d => weekOf(d);
+export const missionOf = d => MISSIONS[weekOf(d) % MISSIONS.length];
+const LEVELS = [[1, '입문'], [4, '꾸준'], [10, '단골'], [25, '기록광'], [50, '장인']];
+// 저장된 기록만으로 계산한다. 서버 없이 이 기기 안에서 끝난다.
+export function progress(hist, done = [], now = Date.now()) {
+  const weeks = new Set(hist.map(h => weekOf(h.d))), wk = weekOf(now), thisWeek = hist.filter(h => weekOf(h.d) === wk).length;
+  let streak = 0; for (let w = weeks.has(wk) ? wk : wk - 1; weeks.has(w); w--) streak++;
+  const n = hist.length, i = LEVELS.reduce((a, [need], j) => n >= need ? j : a, -1), kinds = new Set(hist.map(h => h.ex)).size;
+  const badges = [[n >= 1, '첫 기록'], [streak >= 2, '2주 연속'], [streak >= 4, '4주 연속'], [streak >= 8, '8주 연속'], [kinds >= 3, '3종목'], [kinds >= 7, '전 종목'], [done.length >= 1, '미션 완수'], [done.length >= 4, '미션 4회']].filter(b => b[0]).map(b => b[1]);
+  const last = n ? hist[n - 1].d : 0, gap = last ? Math.floor((now - last) / 864e5) : 0;
+  const next = !n ? '첫 영상을 올려 보세요.' : thisWeek >= 2 ? '이번 주 기록 완료. 다음 주에 다시 찍어 비교해 보세요.' : gap >= 7 ? `마지막 기록이 ${gap}일 전입니다. 오늘 한 세트 찍어 비교해 보세요.` : thisWeek ? `이번 주 ${2 - thisWeek}번 더 찍으면 주간 목표 달성입니다.` : '이번 주 첫 기록을 남겨 연속 기록을 이어 가세요.';
+  return { n, streak, thisWeek, level: i >= 0 ? LEVELS[i][1] : '', toNext: i + 1 < LEVELS.length ? LEVELS[i + 1][0] - n : 0, nextLevel: i + 1 < LEVELS.length ? LEVELS[i + 1][1] : '', badges, next, mission: missionOf(now).t, missionDone: done.includes(wk) };
+}
+export function newBest(hist, ex, out) {
+  const s = hist.filter(h => h.ex === ex && h.s !== undefined).map(h => h.s);
+  return s.length && out.score > Math.max(...s) ? `개인 최고 기록 갱신: ${out.scoreLabel}` : '';
 }
 export function compare(hist, ex, out) {
   const prev = [...hist].reverse().find(h => h.ex === ex); if (!prev) return '첫 기록입니다. 같은 조건으로 다시 찍으면 변화를 보여 줍니다.';
