@@ -18,7 +18,7 @@ export const EX = {
   bench: { name: '벤치프레스', goal: '가동 범위', guide: '옆에서, 팔과 상체가 나오게', peak: 'low', sig: J => J.wrist.y, live: J => ['팔꿈치', angle(J.sh, J.elbow, J.wrist)],
     judge: J => { const a = angle(J.sh, J.elbow, J.wrist); return { pass: a <= 100, stats: { '바닥 팔꿈치 각도': a } }; } },
   press: { name: '오버헤드프레스', goal: '잠금', guide: '옆에서, 팔을 든 전신이 나오게', peak: 'high', sig: J => J.wrist.y, live: J => ['팔꿈치', angle(J.sh, J.elbow, J.wrist)],
-    judge: J => { const a = angle(J.sh, J.elbow, J.wrist); return { pass: a >= 160, stats: { '위 지점 팔꿈치 각도': a, '상체 기울기': lean(J.sh, J.hip) } }; } },
+    judge: J => { const a = angle(J.sh, J.elbow, J.wrist), arm = Math.hypot(J.sh.x - J.elbow.x, J.sh.y - J.elbow.y) + Math.hypot(J.elbow.x - J.wrist.x, J.elbow.y - J.wrist.y), up = (J.sh.y - J.wrist.y) / arm; return { pass: a >= 150 || up >= .8, stats: { '위 지점 팔꿈치 각도': a, '상체 기울기': lean(J.sh, J.hip) } }; } },
   pushup: { name: '푸시업', goal: '깊이', guide: '옆에서, 전신이 나오게', peak: 'low', sig: J => J.sh.y, live: J => ['팔꿈치', angle(J.sh, J.elbow, J.wrist)],
     judge: J => { const a = angle(J.sh, J.elbow, J.wrist), b = angle(J.sh, J.hip, J.ankle); return { pass: a <= 100, stats: { '바닥 팔꿈치 각도': a, '몸통 일직선 각도': b } }; } },
   pullup: { name: '풀업', goal: '당기는 높이', guide: '옆이나 뒤에서, 상체와 팔이 나오게', peak: 'high', sig: J => J.sh.y, live: J => ['팔꿈치', angle(J.sh, J.elbow, J.wrist)],
@@ -31,58 +31,82 @@ export function joints(p) {
   return { sh: p[S[0]], elbow: p[S[1]], wrist: p[S[2]], hip: p[S[3]], knee: p[S[4]], ankle: p[S[5]], toe: p[S[6]] };
 }
 function running(frames, times) {
-  const J = frames.map(joints), leg = median(J.map(j => Math.hypot(j.hip.x - j.knee.x, j.hip.y - j.knee.y) + Math.hypot(j.knee.x - j.ankle.x, j.knee.y - j.ankle.y)));
-  const a = smooth(frames.map(p => p[27].x - p[28].x), 1), steps = [];
-  for (let i = 1; i < a.length; i++) if (a[i - 1] * a[i] < 0 && Math.abs(a[i] - a[i - 1]) > leg * .01 && (!steps.length || times[i] - steps[steps.length - 1] > .18)) steps.push(times[i]);
-  const secs = times[times.length - 1] - times[0], cadence = steps.length > 1 ? (steps.length - 1) / (steps[steps.length - 1] - steps[0]) * 60 : 0;
-  const gaps = steps.slice(1).map((t, i) => t - steps[i]), odd = gaps.filter((_, i) => i % 2), even = gaps.filter((_, i) => !(i % 2));
-  const balance = odd.length && even.length ? Math.abs(mean(odd) - mean(even)) / mean(gaps) * 100 : 0;
-  const hipMid = frames.map(p => (p[23].y + p[24].y) / 2), base = smooth(hipMid, 8), bob = smooth(hipMid.map((y, i) => y - base[i]), 1);
-  const sorted = [...bob].sort((x, y) => x - y), bounce = (sorted[Math.floor(bob.length * .95)] - sorted[Math.floor(bob.length * .05)]) / leg * 100;
+  const J = frames.map(joints), legs = J.map(j => Math.hypot(j.hip.x - j.knee.x, j.hip.y - j.knee.y) + Math.hypot(j.knee.x - j.ankle.x, j.knee.y - j.ankle.y)), leg = median(legs);
+  const fps = (times.length - 1) / (times[times.length - 1] - times[0]), secs = times[times.length - 1] - times[0];
+  // 다리 길이로 나눠서 사람이 멀어지거나 카메라가 움직여도 값이 흔들리지 않게 한다.
+  const sw = smooth(frames.map((p, i) => (p[27].x - p[28].x) / legs[i]), 1), mid = mean(sw), z = sw.map(v => v - mid);
+  const corr = lag => { let n = 0, d = 0; for (let i = 0; i + lag < z.length; i++) { n += z[i] * z[i + lag]; d += z[i] * z[i]; } return d ? n / d : 0; };
+  let best = 0, score = -1;
+  // 한 걸음 주기는 0.25~0.45초. 좌우 교대라 왼발 기준 한 주기는 그 두 배다.
+  for (let lag = Math.round(.5 * fps); lag <= Math.round(.9 * fps); lag++) { const c = corr(lag); if (c > score) { score = c; best = lag; } }
+  const stride = best / fps, cadence = best ? 120 / stride : 0;
+  const hips = frames.map((p, i) => (p[23].y + p[24].y) / 2 / legs[i]), w = Math.max(2, Math.round(stride * fps / 4)), base = smooth(hips, w * 2), bob = hips.map((y, i) => y - base[i]);
+  const cycles = []; for (let i = 0; i + best / 2 < bob.length; i += Math.max(1, Math.round(best / 2))) { const seg = bob.slice(i, i + Math.round(best / 2) + 1); cycles.push(Math.max(...seg) - Math.min(...seg)); }
+  const bounce = (cycles.length ? median(cycles) : 0) * 100;
+  const half = Math.max(1, Math.round(best / 2)), gaps = []; for (let i = 0; i + half < z.length; i++) if (z[i] * z[i + 1] < 0) gaps.push(i);
+  const step = gaps.slice(1).map((v, i) => (v - gaps[i]) / fps).filter(g => g > .15 && g < .7), odd = step.filter((_, i) => i % 2), even = step.filter((_, i) => !(i % 2));
+  const balance = odd.length && even.length ? Math.abs(mean(odd) - mean(even)) / mean(step) * 100 : 0;
   const torso = median(J.map(j => lean(j.sh, j.hip)));
-  const ahead = frames.map(p => Math.max(Math.abs(p[27].x - p[23].x), Math.abs(p[28].x - p[24].x)) / leg).sort((x, y) => x - y), reach = ahead[Math.floor(ahead.length * .9)];
+  const ahead = frames.map((p, i) => Math.max(Math.abs(p[27].x - p[23].x), Math.abs(p[28].x - p[24].x)) / legs[i]).sort((x, y) => x - y), reach = ahead[Math.floor(ahead.length * .9)];
   const lift = frames.map(p => Math.max(lean(p[23], p[25]), lean(p[24], p[26]))).sort((x, y) => x - y), knee = lift[Math.floor(lift.length * .9)];
   const elbow = median(J.map(j => angle(j.sh, j.elbow, j.wrist)));
-  return { kind: 'run', cadence, torso, reach, secs, balance, bounce, knee, elbow, steps, gaps, bob: bob.map(v => v / leg * 100), visibility: vis(frames, [11, 23, 25, 27]) };
+  const hTop = frames.map(p => Math.max(p[27].y, p[28].y) - p[0].y), bodyH = median(hTop), spread = Math.sqrt(mean(legs.map(l => (l - leg) ** 2))) / leg;
+  const steps = Math.round(cadence / 60 * secs), jump = J.slice(1).filter((j, i) => Math.hypot(j.hip.x - J[i].hip.x, j.hip.y - J[i].hip.y) > leg * .6).length;
+  return { kind: 'run', cadence, torso, reach, secs, balance, bounce, knee, elbow, steps, rhythm: score, bodyH, spread, cuts: jump, bob: smooth(bob, 1).map(v => v * 100), visibility: vis(frames, [11, 23, 25, 27]) };
 }
 export function measure(frames, times, key) {
   const ex = EX[key];
   if (ex.peak === 'run') return running(frames, times);
   const J = frames.map(joints), sign = ex.peak === 'low' ? 1 : -1, s = smooth(J.map(j => sign * ex.sig(j)));
-  const lo = Math.min(...s), hi = Math.max(...s), range = hi - lo, thr = lo + range * .55, near = lo + range * .12;
   const size = median(J.map(j => Math.hypot(j.sh.x - j.hip.x, j.sh.y - j.hip.y)));
-  const reps = []; let i = 0;
-  while (i < s.length) {
-    if (s[i] > thr) {
-      let j = i, pk = i;
-      while (j < s.length && s[j] > thr) { if (s[j] > s[pk]) pk = j; j++; }
-      let a = pk, b = pk;
-      while (a > 0 && s[a] > near) a--;
-      while (b < s.length - 1 && s[b] > near) b++;
-      if (!reps.length || times[pk] - times[reps[reps.length - 1].peak] > .6) reps.push({ start: a, peak: pk, end: b });
-      i = j;
-    } else i++;
+  // 전체 폭 대신 봉우리별 돌출 높이로 찾는다. 일어서기 같은 자세 전환이 섞여도 반복을 놓치지 않는다.
+  const peaks = [];
+  for (let i = 1; i < s.length; i++) {
+    if (s[i] < s[i - 1] || (i < s.length - 1 && s[i] <= s[i + 1])) continue;
+    let l = s[i], r = s[i], j = i - 1, k = i + 1;
+    for (; j >= 0 && s[j] <= s[i]; j--) l = Math.min(l, s[j]);
+    for (; k < s.length && s[k] <= s[i]; k++) r = Math.min(r, s[k]);
+    // 영상 끝에서 잘린 쪽은 비교에서 뺀다. 첫 회차나 마지막 회차를 놓치지 않기 위해서다.
+    const sides = [...(j >= 0 ? [l] : []), ...(k < s.length ? [r] : [])], base = sides.length ? Math.max(...sides) : Math.min(l, r), p = s[i] - base;
+    if (p >= size * .2) peaks.push({ i, p: j < 0 && k >= s.length ? Math.max(s[i] - l, s[i] - r) : p });
   }
+  const typical = peaks.length ? median(peaks.map(p => p.p)) : 0, kept = [];
+  for (const p of peaks.filter(p => p.p >= typical * .5)) {
+    const last = kept[kept.length - 1];
+    if (last && times[p.i] - times[last.i] < .6) { if (p.p > last.p) kept[kept.length - 1] = p; } else kept.push(p);
+  }
+  const reps = kept.map(({ i, p }, q) => {
+    const stop = s[i] - p * .85, floor = q ? kept[q - 1].i : 0, ceil = q < kept.length - 1 ? kept[q + 1].i : s.length - 1;
+    let a = i, b = i;
+    while (a > floor && s[a] > stop) a--;
+    while (b < ceil && s[b] > stop) b++;
+    return { start: a, peak: i, end: b };
+  });
+  const range = (typical || Math.max(...s) - Math.min(...s)) / size;
+  let cuts = 0; for (let i = 1; i < J.length; i++) if (Math.hypot(J[i].hip.x - J[i - 1].hip.x, J[i].hip.y - J[i - 1].hip.y) > size * .8) cuts++;
   for (const r of reps) {
     const c = { hipY: mean(J.slice(r.peak - 1, r.peak + 2).map(j => j.hip.y)), kneeY: mean(J.slice(r.peak - 1, r.peak + 2).map(j => j.knee.y)) };
     Object.assign(r, ex.judge(J[r.peak], c)); r.go = times[r.peak] - times[r.start]; r.back = times[r.end] - times[r.peak]; r.t = times[r.peak];
   }
-  return { kind: 'rep', reps, visibility: vis(frames, [11, 23, 25, 27]), range: range / size };
+  return { kind: 'rep', reps, visibility: vis(frames, [11, 23, 25, 27]), range, cuts };
 }
 const statLine = rs => { const o = {}; Object.keys(rs[0].stats).forEach(k => { o[k] = median(rs.map(r => r.stats[k])); }); return o; };
 export function interpret(m, key) {
   const ex = EX[key], fail = { ok: false, headline: '분석하기 어려운 영상입니다', tip: `${ex.guide} 다시 찍어 주세요.` };
   if (m.kind === 'run') {
-    if (m.visibility < .6 || m.secs < 3 || m.cadence < 90) return fail;
+    if (m.cuts >= 2) return { ok: false, headline: '여러 장면이 이어진 영상입니다', tip: `편집 없이 한 번에 찍은 영상을 올려 주세요. ${ex.guide}.` };
+    if (m.tooSmall) return { ok: false, headline: '사람이 너무 작게 찍혔습니다', tip: '화면 높이의 절반 이상이 되도록 가까이서 찍어 주세요.' };
+    if (m.visibility < .6 || m.secs < 3 || m.rhythm < .35 || m.spread > .25) return { ok: false, headline: '달리는 리듬을 읽지 못했습니다', tip: `${ex.guide}, 일정한 속도로 달리는 장면을 찍어 주세요.` };
     const seed = Math.round(m.cadence * 3 + m.torso * 7 + m.reach * 100), pick = (a, n) => a[(seed * 31 + n * 17) % a.length];
-    const k = m.cadence < 165 ? 'slow' : m.cadence > 190 ? 'quick' : 'good', k2 = m.reach > .55 ? 'reach' : m.torso > 15 ? 'lean' : m.bounce > 9 ? 'bounce' : 'ok';
-    const kind = m.bounce > 9 ? '통통 튀는 러너' : m.reach > .55 ? '보폭형 러너' : m.cadence >= 175 ? '잰걸음 러너' : '안정형 러너';
+    const k = m.cadence < 165 ? 'slow' : m.cadence > 190 ? 'quick' : 'good', k2 = m.reach > .55 ? 'reach' : m.torso > 15 ? 'lean' : m.bounce > 12 ? 'bounce' : 'ok';
+    const kind = m.bounce > 12 ? '통통 튀는 러너' : m.reach > .55 ? '보폭형 러너' : m.cadence >= 175 ? '잰걸음 러너' : '안정형 러너';
     const goal = m.cadence < 175 ? `다음 목표: 같은 페이스로 케이던스 ${Math.round(m.cadence * 1.05)}` : k2 === 'bounce' ? `다음 목표: 위아래 움직임 ${(m.bounce - 1).toFixed(1)}% 이하` : `다음 목표: 지금 수치를 유지하며 거리 늘리기`;
-    return { ok: true, run: true, name: ex.name, main: m.cadence, mainLabel: '케이던스', headline: pick(RUN.head[k], 1), why: pick(RUN.why[k2], 2), type: `러너 유형 후보: ${kind}`, tip: pick(RUN.tip[k2 === 'ok' ? k : k2], 3), plan: `${goal}. ${pick(RUN.plan, 4)}`, big: `${m.cadence.toFixed(0)}`, bigLabel: '걸음/분', kind, bob: m.bob, stats: [[`${m.cadence.toFixed(0)}`, '케이던스(걸음/분)'], [`${m.bounce.toFixed(1)}%`, '위아래 움직임(다리 길이 대비)'], [`${m.balance.toFixed(1)}%`, '좌우 리듬 차이'], [`${m.torso.toFixed(0)}°`, '상체 기울기'], [`${(m.reach * 100).toFixed(0)}%`, '앞다리 뻗음'], [`${m.knee.toFixed(0)}°`, '무릎 들림'], [`${m.elbow.toFixed(0)}°`, '팔꿈치 각도'], [`${m.steps.length}걸음`, '분석 걸음 수']] };
+    return { ok: true, run: true, name: ex.name, main: m.cadence, mainLabel: '케이던스', headline: pick(RUN.head[k], 1), why: pick(RUN.why[k2], 2), type: `러너 유형 후보: ${kind}`, tip: pick(RUN.tip[k2 === 'ok' ? k : k2], 3), plan: `${goal}. ${pick(RUN.plan, 4)}`, big: `${m.cadence.toFixed(0)}`, bigLabel: '걸음/분', kind, bob: m.bob, stats: [[`${m.cadence.toFixed(0)}`, '케이던스(걸음/분)'], [`${m.bounce.toFixed(1)}%`, '위아래 움직임(다리 길이 대비)'], [`${m.balance.toFixed(1)}%`, '좌우 리듬 차이'], [`${m.torso.toFixed(0)}°`, '상체 기울기'], [`${(m.reach * 100).toFixed(0)}%`, '앞다리 뻗음'], [`${m.knee.toFixed(0)}°`, '무릎 들림'], [`${m.elbow.toFixed(0)}°`, '팔꿈치 각도'], [`약 ${m.steps}걸음`, '분석 걸음 수']] };
   }
-  const r = m.reps; if (m.visibility < .6 || m.range < .15 || r.length < 2) return fail;
+  const r = m.reps; if (m.cuts >= 2) return { ok: false, headline: '여러 장면이 이어진 영상입니다', tip: `편집 없이 한 번에 찍은 영상을 올려 주세요. ${ex.guide}.` };
+  if (m.visibility < .6 || r.length < 1) return fail;
   const n = r.length, pass = r.filter(x => x.pass).length, ups = r.map(x => ex.peak === 'low' ? x.back : x.go), go = mean(r.map(x => ex.peak === 'low' ? x.go : x.back)), up = mean(ups);
-  const firstUp = mean(ups.slice(0, Math.ceil(n / 2))), slowRep = ups.indexOf(Math.max(...ups)) + 1, tired = Math.max(...ups) / firstUp >= 1.15;
+  const firstUp = mean(ups.slice(0, Math.ceil(n / 2))), slowRep = ups.indexOf(Math.max(...ups)) + 1, tired = n >= 3 && Math.max(...ups) / firstUp >= 1.15;
   const primary = Object.keys(r[0].stats).pop(), vals = r.map(x => x.stats[primary]), steady = Math.max(...vals) - Math.min(...vals) <= 12, s = statLine(r);
   const seed = Math.round(n * 7 + up * 100 + go * 31 + vals[0] * 3), pick = (a, x) => a[(seed * 31 + x * 17) % a.length];
   const k1 = pass === n ? (steady ? 'steadyAll' : 'allVary') : pass >= n / 2 ? 'some' : 'shallow';

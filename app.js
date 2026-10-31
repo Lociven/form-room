@@ -31,7 +31,7 @@ async function run(src) {
       if (k % 6 === 0) { $('pg').value = t / dur * 100; $('st').textContent = `분석 중 ${Math.round(t / dur * 100)}%`; }
     }
     if (frames.length < 10) throw new Error('사람을 찾지 못했습니다. 전신이 나오게 찍어 주세요.');
-    const m = measure(frames, times, key), out = interpret(m, key); S = { frames, times, m, out, key };
+    const m = measure(frames, times, key); if (m.kind === 'run') m.tooSmall = m.bodyH < v.videoHeight * .3; const out = interpret(m, key); S = { frames, times, m, out, key };
     if (out.ok) { const h = store('hist'); out.compare = compare(h, key, out); h.push({ d: Date.now(), ex: key, v: out.main }); save('hist', h); }
     window.__result = { ...out, sec: (performance.now() - t0) / 1000, frames: frames.length, reps: m.reps?.length, vis: m.visibility, range: m.range };
     show(out); if (out.ok) { $('replay').hidden = false; await seek(v, 0); paint(0); }
