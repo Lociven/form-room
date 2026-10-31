@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>폼 기록실</title>
+<style>
+:root{--bg:#10202a;--panel:#182e3a;--fg:#eef3f4;--dim:#a8bac2;--line:#2f4b59;--cy:#7be6ff;--or:#ffb03c}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 "Apple SD Gothic Neo","Malgun Gothic",sans-serif;padding:20px max(16px,env(safe-area-inset-right)) 48px max(16px,env(safe-area-inset-left))}
+main{max-width:560px;margin:0 auto;display:grid;gap:16px}h1{font-size:30px;margin:8px 0 0;line-height:1.2}h2{font-size:19px;margin:0 0 8px}p{margin:0}.dim{color:var(--dim);font-size:14px}
+section{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px}
+label.btn,button{display:block;width:100%;text-align:center;background:var(--cy);color:#07202a;font:inherit;font-weight:700;border:0;border-radius:6px;padding:12px;cursor:pointer}
+input[type=file]{position:absolute;opacity:0;width:1px;height:1px}input[type=number]{width:100%;font:inherit;padding:9px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--fg)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.stat b{display:block;font-size:24px;color:var(--or)}.stat span{font-size:13px;color:var(--dim)}
+.bars{display:flex;align-items:flex-end;gap:4px;height:110px;margin-top:10px}.bars i{flex:1;background:var(--cy);display:block;min-width:4px}.bars i.hot{background:var(--or)}
+canvas{width:100%;display:block;border-radius:6px}progress{width:100%}ol{margin:6px 0 0;padding-left:20px}[hidden]{display:none!important}
+</style></head><body><main>
+<header><h1>폼 기록실</h1><p class="dim">영상은 이 기기 안에서만 분석되고 어디에도 올라가지 않습니다.</p></header>
+<section><h2>스쿼트 분석</h2><ol class="dim"><li>옆에서 찍습니다.</li><li>머리부터 발끝까지 나오게 합니다.</li><li>10~20초가 좋습니다.</li></ol><br>
+<label class="btn" for="file">영상 고르기</label><input id="file" type="file" accept="video/*">
+<p id="st" class="dim" style="margin-top:10px"></p><progress id="pg" max="100" value="0" hidden></progress></section>
+<section id="res" hidden><h2 id="headline"></h2><p id="why"></p><p id="type" class="dim"></p><br><div class="grid" id="stats"></div>
+<p class="dim" style="margin-top:12px">회차별 올림 시간</p><div class="bars" id="bars"></div><br><h2>이번 주 한 가지</h2><p id="tip"></p><br><h2>4주 방향</h2><p id="plan"></p><br><canvas id="card" width="1080" height="1080"></canvas><p class="dim">이미지를 길게 눌러 저장하세요. 2D 영상 추정이며 의학적 판단이 아닙니다.</p></section>
+<section><h2>몸 기록</h2><div class="grid"><div><label class="dim" for="w">몸무게(kg)</label><input id="w" type="number" step="0.1"></div><div><label class="dim" for="m">골격근량(kg)</label><input id="m" type="number" step="0.1"></div></div><br><button id="save" type="button">기록하기</button><p id="body" class="dim" style="margin-top:10px"></p></section>
+</main>
+<video id="v" playsinline muted style="position:absolute;left:-9999px;width:320px"></video>
+<script type="module" src="app.js"></script>
+</body></html>
