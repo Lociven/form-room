@@ -47,7 +47,9 @@ function running(frames, times) {
     if (c + 2 >= z.length * .7) break;
     for (let lag = c - 2; lag <= c + 2; lag++) { const v = corr(lag); if (v > top) { top = v; at = lag; } }
     const l = corr(at - 1), r = corr(at + 1), bend = l - 2 * top + r;
-    period = (at + (bend < 0 ? (l - r) / (2 * bend) : 0)) / k;
+    const next = (at + (bend < 0 ? (l - r) / (2 * bend) : 0)) / k;
+    if (!(Math.abs(next - period) <= period * .1)) break;
+    period = next;
   }
   const stride = period / fps, cadence = best ? 120 / stride : 0;
   const hips = frames.map((p, i) => (p[23].y + p[24].y) / 2 / scale[i]), w = Math.max(2, Math.round(stride * fps / 4)), base = smooth(hips, w * 2), bob = hips.map((y, i) => y - base[i]);
@@ -114,7 +116,7 @@ export function interpret(m, key) {
   if (m.kind === 'run') {
     if (m.cuts >= 2) return { ok: false, headline: '여러 장면이 이어진 영상입니다', tip: `편집 없이 한 번에 찍은 영상을 올려 주세요. ${ex.guide}.` };
     if (m.tooSmall) return { ok: false, headline: '사람이 너무 작게 찍혔습니다', tip: '화면 높이의 절반 이상이 되도록 가까이서 찍어 주세요.' };
-    if (m.visibility < .6 || m.secs < 3 || m.rhythm < .35 || m.spread > .25) return { ok: false, headline: '달리는 리듬을 읽지 못했습니다', tip: `${ex.guide}, 일정한 속도로 달리는 장면을 찍어 주세요.` };
+    if (m.visibility < .6 || m.secs < 3 || m.rhythm < .35 || m.spread > .25 || m.cadence < 120 || m.cadence > 300) return { ok: false, headline: '달리는 리듬을 읽지 못했습니다', tip: `${ex.guide}, 일정한 속도로 달리는 장면을 찍어 주세요.` };
     const seed = Math.round(m.cadence * 3 + m.torso * 7 + m.reach * 100), pick = (a, n) => a[(seed * 31 + n * 17) % a.length];
     // 기준값은 공개 러너 측정(39명, 80회)의 측정값 분포 85% 지점이다. 케이던스는 속도에 따라 달라 양 끝만 본다.
     const k = m.cadence < 155 ? 'slow' : m.cadence > 195 ? 'quick' : 'good', k2 = m.reach > .31 ? 'reach' : m.torso > 15 ? 'lean' : m.bounce > 16.5 ? 'bounce' : 'ok';
